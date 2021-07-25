@@ -516,8 +516,9 @@ Also sets `org-caldav-empty-calendar' if calendar is empty."
 	(setq url nil))
       (when (string-match "\"\\(.*\\)\"" etag)
 	(setq etag (match-string 1 etag)))
-      (when (and url etag)
+      (when (and (and url etag) (not (string-equal url (concat org-caldav-calendar-id "/"))))
 	(push (cons (url-unhex-string url) etag) files))))
+    
     files))
 
 (defun org-caldav-get-event-etag-list ()
@@ -763,7 +764,7 @@ Are you really sure? ")))
   "Find Org entry with UID and calculate its MD5."
   (let ((marker (org-id-find uid t)))
     (when (null marker)
-      (error "Could not find UID %s." uid))
+      (error "Could not find UID %s in generat md5." uid))
     (with-current-buffer (marker-buffer marker)
       (goto-char (marker-position marker))
       (md5 (buffer-substring-no-properties
@@ -932,7 +933,7 @@ ICSBUF is the buffer containing the exported iCalendar file."
 	  (while (and (setq uid (org-caldav-get-uid))
 		      (not (string-match (car cur) uid))))
 	  (unless (string-match (car cur) uid)
-	    (error "Could not find UID %s" (car cur)))
+	    (error "Could not find UID %s in update events" (car cur)))
 	  (org-caldav-narrow-event-under-point)
 	  (org-caldav-cleanup-ics-description)
 	  (org-caldav-maybe-fix-timezone)
@@ -963,10 +964,12 @@ ICSBUF is the buffer containing the exported iCalendar file."
 	    (counter 0))
 	(dolist (cur events)
 	  (setq counter (1+ counter))
+          (org-caldav-debug-print 1 ">>>>cur events" cur)
 	  (when (or (eq org-caldav-delete-calendar-entries 'always)
 		    (y-or-n-p (format "Delete event '%s' from external calendar?"
-				       (org-caldav-get-calendar-summary-from-uid
-					(car cur)))))
+				       (decode-coding-string (org-caldav-get-calendar-summary-from-uid
+					(car cur)) 'utf-8))))
+
 	    (message "Deleting event %d from %d" counter (length events))
 	    (org-caldav-delete-event (car cur))
 	    (push (list org-caldav-calendar-id (car cur)
@@ -1134,7 +1137,7 @@ which can only be synced to calendar. Ignoring." uid))
 	   1 (format "Event UID %s: Changed in Cal --> Org" uid))
 	  (let ((marker (org-id-find (car cur) t)))
 	    (when (null marker)
-	      (error "Could not find UID %s." (car cur)))
+	      (error "Could not find UID %s in update ORG." (car cur)))
 	    (with-current-buffer (marker-buffer marker)
 	      (goto-char (marker-position marker))
 	      (when org-caldav-backup-file
@@ -1404,10 +1407,11 @@ Do nothing if LEVEL is larger than `org-caldav-debug-level'."
 		      (point-min))))
 
 (defun org-caldav-insert-org-entry (start-d start-t end-d end-t
-                                            summary description location e-type
+                                            summary description location e-type freq
                                             &optional uid level)
   "Insert org block from given data at current position.
 START/END-D: Start/End date.  START/END-T: Start/End time.
+FREQ: Start org datetime with recursive option.
 SUMMARY, DESCRIPTION, LOCATION, UID: obvious.
 Dates must be given in a format `org-read-date' can parse.
 
@@ -1418,7 +1422,7 @@ If LEVEL is nil, it defaults to 1.
 Returns MD5 from entry."
   (insert (make-string (or level 1) ?*) " " summary "\n")
   (insert (if org-adapt-indentation "  " "")
-   (org-caldav-create-time-range start-d start-t end-d end-t e-type) "\n")
+   (org-caldav-create-time-range start-d start-t end-d end-t e-type freq) "\n")
   (when (> (length description) 0)
     (insert "  " description "\n"))
   (forward-line -1)
@@ -1431,13 +1435,14 @@ Returns MD5 from entry."
 	(org-entry-beginning-position)
 	(org-entry-end-position))))
 
-(defun org-caldav-create-time-range (start-d start-t end-d end-t e-type)
-  "Creeate an Org timestamp range from START-D/T, END-D/T."
+(defun org-caldav-create-time-range (start-d start-t end-d end-t e-type freq)
+  "Create an Org timestamp range from START-D/T, END-D/T."
+  ;;(org-caldav-debug-print 1 "<<<arguments" start-d start-t end-d end-t e-type freq)
   (with-temp-buffer
     (cond
      ((string= "S" e-type) (insert "SCHEDULED: "))
      ((string= "DL" e-type) (insert "DEADLINE: "))
-     )
+     (t (insert "SCHEDULED: ")))
     (org-caldav-insert-org-time-stamp start-d start-t)
     (if (and end-d
 	     (not (equal end-d start-d)))
@@ -1448,6 +1453,8 @@ Returns MD5 from entry."
 	;; Same day, different time.
 	(backward-char 1)
 	(insert "-" end-t)))
+    (when freq
+      (insert " " freq))
     (buffer-string)))
 
 (defun org-caldav-insert-org-time-stamp (date &optional time)
@@ -1614,7 +1621,7 @@ If COMPLEMENT is non-nil, return all item without errors."
 ;; The LOCATION property is added the extracted list
 (defun org-caldav-convert-event ()
   "Convert icalendar event in current buffer.
-Returns a list '(start-d start-t end-d end-t summary description location)'
+Returns a list '(start-d start-t end-d end-t summary description location freq)'
 which can be fed into `org-caldav-insert-org-entry'."
   (let ((decoded (decode-coding-region (point-min) (point-max) 'utf-8 t)))
     (erase-buffer)
@@ -1651,7 +1658,7 @@ which can be fed into `org-caldav-insert-org-entry'."
 	 (summary (icalendar--convert-string-for-import
 		   (or (icalendar--get-event-property e 'SUMMARY)
 		       "No Title")))
-     e-type
+	 e-type
 	 (description (icalendar--convert-string-for-import
 		       (or (icalendar--get-event-property e 'DESCRIPTION)
 			   "")))
@@ -1659,6 +1666,13 @@ which can be fed into `org-caldav-insert-org-entry'."
                     (or (icalendar--get-event-property e 'LOCATION)
                         "")))
 	 (rrule (icalendar--get-event-property e 'RRULE))
+	 (freq (when (and rrule (string-match ".*FREQ=\\(.*\\);" rrule))
+		 (concat "+" (save-match-data
+			       (if (string-match ".*INTERVAL=\\(.*\\);.*" rrule)
+				   (match-string 1 rrule) "1"))
+			 (save-match-data
+			   (and (string-match ".*FREQ=\\(.*\\);.*" rrule)
+				(downcase (substring (match-string 1 rrule) 0 1)))))))
 	 (rdate (icalendar--get-event-property e 'RDATE))
 	 (duration (icalendar--get-event-property e 'DURATION)))
     (if (string-match "^\\(?:\\(DL\\|S\\):\s+\\)?\\(.*\\)$" summary)
@@ -1703,7 +1717,7 @@ which can be fed into `org-caldav-insert-org-entry'."
     ;; Return result
     (list start-d start-t
 	  (if end-t end-d end-1-d)
-	  end-t summary description location e-type)))
+	  end-t summary description location e-type freq)))
 
 ;; This is adapted from url-dav.el, written by Bill Perry.
 ;; This does more error checking on the headers and retries
