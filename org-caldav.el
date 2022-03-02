@@ -848,7 +848,8 @@ If RESUME is non-nil, try to resume."
 	(org-caldav-load-sync-state)
 	;; Check if org files were removed.
 	(when org-caldav-previous-files
-	  (let ((missing (cl-set-difference org-caldav-previous-files
+	  (let ((missing (cl-set-difference 
+                      (mapcar 'org-caldav--real-name-from-org org-caldav-previous-files)
 					    org-caldav-files
 					    :test #'string=)))
 	    (when (and missing
@@ -1496,7 +1497,7 @@ See also `org-caldav-save-directory'."
       (insert "\n"))
     ;; Save the current value of org-caldav-files
     (insert "(setq org-caldav-previous-files '"
-	    (prin1-to-string org-caldav-files) ")\n")
+	    (prin1-to-string (mapcar 'org-caldav--relative-name-to-org org-caldav-files)) ")\n")
     ;; Save it.
     (write-region (point-min) (point-max)
 		  (org-caldav-sync-state-filename org-caldav-calendar-id))))
@@ -1779,6 +1780,13 @@ This witches to OAuth2 if necessary."
     (insert-file-contents path)
     (org-caldav-import-ics-buffer-to-org)))
 
+(defun org-caldav--relative-name-to-org (fname)
+  "Get relative path to org-directory"
+  (file-relative-name fname org-directory))
+
+(defun org-caldav--real-name-from-org (fname)
+  "Get absoulently path of fname which is relative to org-directory"
+  (expand-file-name fname org-directory))
 (provide 'org-caldav)
 
 ;;; org-caldav.el ends here
